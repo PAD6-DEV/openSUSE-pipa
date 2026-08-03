@@ -60,7 +60,11 @@ PIPA_PACKAGES=(
     swclock-offset
     qrtr
     pd-mapper
+)
+# Not published for TW yet; install if available.
+OPTIONAL_PIPA_PACKAGES=(
     tqftpserv
+    rmtfs
 )
 if [ "$PIPA_INCLUDE_SENSORS" = "1" ]; then
     PIPA_PACKAGES+=(hexagonrpc iio-sensor-proxy libssc pipa-sensors)
@@ -175,7 +179,7 @@ BASE_PACKAGES=(
     dracut
     grub2
     which
-    python3
+    python313
 )
 
 case "$DE_NAME" in
@@ -187,9 +191,9 @@ case "$DE_NAME" in
             plasma6-desktop
             konsole
             dolphin
-            firefox
+            MozillaFirefox
             flatpak
-            xdg-desktop-portal-kde
+            xdg-desktop-portal-kde6
         )
         DISPLAY_MANAGER="sddm"
         ;;
@@ -200,7 +204,7 @@ case "$DE_NAME" in
             gnome-shell
             gnome-terminal
             nautilus
-            firefox
+            MozillaFirefox
             flatpak
             xdg-desktop-portal-gnome
         )
@@ -213,9 +217,9 @@ case "$DE_NAME" in
             sddm
             maliit-keyboard
             konsole
-            firefox
+            MozillaFirefox
             flatpak
-            xdg-desktop-portal-kde
+            xdg-desktop-portal-kde6
         )
         DISPLAY_MANAGER="sddm"
         ;;
@@ -240,21 +244,38 @@ if [ -f /etc/zypp/zypp.conf ]; then
     cp -a /etc/zypp/zypp.conf "$ROOTFS_DIR/etc/zypp/zypp.conf"
 fi
 
-cat > "$ROOTFS_DIR/etc/zypp/repos.d/pipa-pkgs.repo" <<EOF
-[pipa-pkgs]
-name=Pipa Packages for Xiaomi Pad 6
-baseurl=$PIPA_REPO_URL
-enabled=1
-gpgcheck=0
-autorefresh=1
-type=rpm-md
-EOF
+echo "### Verifying pipa-pkgs repo at $PIPA_REPO_URL ..."
+if ! curl -fsSL "${PIPA_REPO_URL%/}/repodata/repomd.xml" -o /tmp/pipa-repomd.xml; then
+    echo "Pipa repo metadata not reachable: ${PIPA_REPO_URL%/}/repodata/repomd.xml" >&2
+    exit 1
+fi
 
-zypper --installroot "$ROOTFS_DIR" --non-interactive --gpg-auto-import-keys refresh
-zypper --installroot "$ROOTFS_DIR" --non-interactive install -y \
+# Register explicitly. Dropping a .repo file alone is not always enough with
+# --installroot when host zypp.conf/services dominate discovery.
+zypper --non-interactive --installroot "$ROOTFS_DIR" removerepo pipa-pkgs 2>/dev/null || true
+zypper --non-interactive --installroot "$ROOTFS_DIR" addrepo -f -G \
+    -n "Pipa Packages for Xiaomi Pad 6" \
+    "$PIPA_REPO_URL" pipa-pkgs
+zypper --non-interactive --installroot "$ROOTFS_DIR" modifyrepo -p 50 pipa-pkgs
+
+zypper --non-interactive --installroot "$ROOTFS_DIR" --gpg-auto-import-keys refresh
+zypper --non-interactive --installroot "$ROOTFS_DIR" repos -up
+
+if ! zypper --non-interactive --installroot "$ROOTFS_DIR" search -x bootmac | grep -q bootmac; then
+    echo "pipa-pkgs repo is enabled but bootmac is still invisible; aborting" >&2
+    zypper --non-interactive --installroot "$ROOTFS_DIR" repos -up || true
+    exit 1
+fi
+
+zypper --non-interactive --installroot "$ROOTFS_DIR" install -y \
     "${BASE_PACKAGES[@]}" \
     "${DESKTOP_PACKAGES[@]}" \
     "${PIPA_PACKAGES[@]}"
+
+if [ ${#OPTIONAL_PIPA_PACKAGES[@]} -gt 0 ]; then
+    zypper --non-interactive --installroot "$ROOTFS_DIR" install -y \
+        "${OPTIONAL_PIPA_PACKAGES[@]}" || true
+fi
 
 echo "### Validating Pipa packages..."
 assert_required_rootfs_files \
