@@ -465,6 +465,11 @@ test -f "$BOOT_MNT/grub2/grub.cfg"
 umount "$BOOT_MNT"
 
 echo "### Building ESP..."
+BOOT_FS_UUID="$(blkid -s UUID -o value "$IMAGE_DIR/$IMAGE_NAME/opensuse_boot.raw")"
+if [ -z "$BOOT_FS_UUID" ]; then
+    echo "Unable to read UUID from opensuse_boot.raw" >&2
+    exit 1
+fi
 truncate -s "${ESP_SIZE_MB}M" "$IMAGE_DIR/$IMAGE_NAME/opensuse_esp.raw"
 mkfs.fat -F 16 -n "$ESP_LABEL" "$IMAGE_DIR/$IMAGE_NAME/opensuse_esp.raw"
 mount -o loop "$IMAGE_DIR/$IMAGE_NAME/opensuse_esp.raw" "$ESP_MNT"
@@ -472,10 +477,16 @@ cp -r "$EFI_TEMPLATE_DIR/EFI" "$ESP_MNT/"
 mkdir -p "$ESP_MNT/EFI/fedora"
 cp -r "$ESP_MNT/EFI/opensuse/." "$ESP_MNT/EFI/fedora/"
 for shim_vendor in opensuse fedora; do
+    # Match Mu-Silicium / Endeavour early-config flow: source bootuuid.cfg,
+    # then search by UUID or fall back to the boot label.
     cat > "$ESP_MNT/EFI/$shim_vendor/grub.cfg" <<EOF
-search --no-floppy --fs-uuid --set=prefix \$BOOT_UUID
-if [ -z "\$prefix" ]; then
-  search --no-floppy --label --set=prefix $BOOT_LABEL
+if [ -f \${config_directory}/bootuuid.cfg ]; then
+  source \${config_directory}/bootuuid.cfg
+fi
+if [ -n "\${BOOT_UUID}" ]; then
+  search --fs-uuid "\${BOOT_UUID}" --set prefix --no-floppy
+else
+  search --label $BOOT_LABEL --set prefix --no-floppy
 fi
 if [ -d (\$prefix)/grub2 ]; then
   set prefix=(\$prefix)/grub2
@@ -484,9 +495,10 @@ else
   set prefix=(\$prefix)/boot/grub2
   configfile \$prefix/grub.cfg
 fi
+boot
 EOF
     cat > "$ESP_MNT/EFI/$shim_vendor/bootuuid.cfg" <<EOF
-set BOOT_UUID=""
+set BOOT_UUID="$BOOT_FS_UUID"
 EOF
 done
 write_uefi_csv "$ESP_MNT/EFI/fedora/BOOTAA64.CSV" "shimaa64.efi" "openSUSE" "openSUSE Pipa"
