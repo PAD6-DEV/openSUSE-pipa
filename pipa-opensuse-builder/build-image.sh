@@ -306,7 +306,8 @@ target_chroot systemctl enable NetworkManager sshd || true
 target_chroot systemctl enable bluetooth systemd-resolved systemd-timesyncd || true
 target_chroot systemctl enable tuned || true
 target_chroot systemctl enable bootmac-bluetooth || true
-target_chroot systemctl enable pd-mapper tqftpserv || true
+target_chroot systemctl enable pd-mapper || true
+target_chroot systemctl enable tqftpserv rmtfs || true
 if [ "$PIPA_INCLUDE_SENSORS" = "1" ]; then
     target_chroot systemctl enable \
         pipa-sensors-persist \
@@ -329,6 +330,10 @@ fi
 
 echo "### Locating kernel artifacts..."
 KERNEL_VER=$(find "$ROOTFS_DIR/usr/lib/modules" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | head -n 1)
+if [ -z "${KERNEL_VER:-}" ]; then
+    echo "No kernel modules directory found under /usr/lib/modules" >&2
+    exit 1
+fi
 KERNEL_IMAGE="$(first_existing_file \
     "$ROOTFS_DIR/boot/Image.gz" \
     "$ROOTFS_DIR/boot/vmlinuz-$KERNEL_VER" \
@@ -349,6 +354,14 @@ if [ -z "${KERNEL_IMAGE:-}" ] || [ ! -f "$KERNEL_IMAGE" ]; then
 fi
 if [ -z "${DTB_IMAGE:-}" ] || [ ! -f "$DTB_IMAGE" ]; then
     echo "Device tree was not found for $KERNEL_VER" >&2
+    exit 1
+fi
+
+echo "### Generating module dependency maps for $KERNEL_VER..."
+# kernel-pipa packages with DEPMOD=/bin/true; modules.dep is created on install/image.
+target_chroot depmod -a "$KERNEL_VER"
+if [ ! -f "$ROOTFS_DIR/usr/lib/modules/$KERNEL_VER/modules.dep" ]; then
+    echo "depmod failed to create modules.dep for $KERNEL_VER" >&2
     exit 1
 fi
 
