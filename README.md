@@ -25,3 +25,8 @@ GitHub Actions builds all three desktops on `ubuntu-24.04-arm` and uploads ZIP a
 | `opensuse_esp.raw` | `rawdump` |
 | `opensuse_boot.raw` | `cust` |
 | `opensuse_rootfs.raw` | `userdata` |
+
+## First boot
+
+- **GNOME:** GDM runs `gnome-initial-setup` (create your user). Root password is `opensuse` for SSH/recovery.
+- **Plasma / Plasma Mobile:** root autologins once, shows a create-user dialog, then reboots to the normal login screen.

@@ -220,6 +220,7 @@ case "$DE_NAME" in
             MozillaFirefox
             flatpak
             xdg-desktop-portal-kde6
+            kdialog
         )
         DISPLAY_MANAGER="sddm"
         ;;
@@ -233,6 +234,7 @@ case "$DE_NAME" in
             MozillaFirefox
             flatpak
             xdg-desktop-portal-gnome
+            gnome-initial-setup
         )
         DISPLAY_MANAGER="gdm"
         ;;
@@ -246,6 +248,7 @@ case "$DE_NAME" in
             MozillaFirefox
             flatpak
             xdg-desktop-portal-kde6
+            kdialog
         )
         DISPLAY_MANAGER="sddm"
         ;;
@@ -331,6 +334,248 @@ echo 'root:opensuse' | target_chroot chpasswd
 echo '%wheel ALL=(ALL:ALL) ALL' > "$ROOTFS_DIR/etc/sudoers.d/wheel"
 chmod 0440 "$ROOTFS_DIR/etc/sudoers.d/wheel"
 target_chroot getent group wheel >/dev/null 2>&1 || target_chroot groupadd -r wheel || true
+
+echo "### First-boot user setup..."
+# openSUSE GDM defaults to InitialSetupEnable=False, which skips the wizard and
+# shows a username prompt with no users to pick. Re-enable native GIS for GNOME.
+# Plasma gets an Endeavour-style create-user dialog via root autologin.
+if [ "$DE_NAME" = "gnome" ]; then
+    # GIS only runs when there are no local users with UID >= 1000.
+    if [ -f "$ROOTFS_DIR/etc/passwd" ]; then
+        while IFS=: read -r _pw_user _ _pw_uid _; do
+            case "$_pw_uid" in
+                ''|*[!0-9]*) continue ;;
+            esac
+            if [ "$_pw_uid" -ge 1000 ] && [ "$_pw_uid" -lt 65534 ]; then
+                echo "Removing pre-created user '$_pw_user' (uid $_pw_uid) so GNOME initial setup can run..."
+                target_chroot userdel -r "$_pw_user" 2>/dev/null || \
+                    target_chroot userdel "$_pw_user" 2>/dev/null || true
+            fi
+        done < "$ROOTFS_DIR/etc/passwd"
+    fi
+    install -d "$ROOTFS_DIR/etc/gdm"
+    cat > "$ROOTFS_DIR/etc/gdm/custom.conf" <<'EOF'
+# GDM configuration storage
+#
+# Note: settings from /etc/sysconfig/displaymanager have a higher priority
+#
+
+[daemon]
+InitialSetupEnable=True
+#WaylandEnable=false
+
+[security]
+
+[xdmcp]
+
+[chooser]
+
+[debug]
+#Enable=true
+EOF
+    # Ensure /etc/sysconfig/displaymanager does not force-disable initial setup.
+    if [ -f "$ROOTFS_DIR/etc/sysconfig/displaymanager" ]; then
+        sed -i \
+            -e 's/^DISPLAYMANAGER_AUTOLOGIN=.*/DISPLAYMANAGER_AUTOLOGIN=""/' \
+            "$ROOTFS_DIR/etc/sysconfig/displaymanager" || true
+    fi
+else
+    install -Dm755 /dev/stdin "$ROOTFS_DIR/usr/local/bin/pipa-firstboot-setup" <<'EOF'
+#!/bin/sh
+set -eu
+
+TITLE="openSUSE Pipa Setup"
+STATE_DIR=/var/lib/pipa-firstboot
+SENTINEL="$STATE_DIR/needs-setup"
+LOCK_FILE="$STATE_DIR/lock"
+AUTOSTART_FILE=/root/.config/autostart/pipa-firstboot-setup.desktop
+DEFAULT_HOSTNAME="pipa"
+DEFAULT_SHELL="/bin/bash"
+
+[ -f "$SENTINEL" ] || exit 0
+
+mkdir -p "$STATE_DIR"
+exec 9>"$LOCK_FILE"
+flock -n 9 || exit 0
+
+dialog_backend() {
+    if command -v kdialog >/dev/null 2>&1; then
+        printf '%s\n' kdialog
+        return 0
+    fi
+    if command -v zenity >/dev/null 2>&1; then
+        printf '%s\n' zenity
+        return 0
+    fi
+    return 1
+}
+
+prompt_info() {
+    message="$1"
+    case "$(dialog_backend)" in
+        zenity) zenity --info --title "$TITLE" --text "$message" >/dev/null 2>&1 || return 1 ;;
+        kdialog) kdialog --title "$TITLE" --msgbox "$message" >/dev/null 2>&1 || return 1 ;;
+    esac
+}
+
+prompt_error() {
+    message="$1"
+    case "$(dialog_backend)" in
+        zenity) zenity --error --title "$TITLE" --text "$message" >/dev/null 2>&1 || true ;;
+        kdialog) kdialog --title "$TITLE" --error "$message" >/dev/null 2>&1 || true ;;
+    esac
+}
+
+trim_whitespace() {
+    printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+prompt_required_text() {
+    prompt="$1"
+    default_value="${2:-}"
+    while :; do
+        case "$(dialog_backend)" in
+            zenity)
+                answer="$(zenity --entry --title "$TITLE" --text "$prompt" --entry-text "$default_value" 2>/dev/null)" || return 1
+                ;;
+            kdialog)
+                answer="$(kdialog --title "$TITLE" --inputbox "$prompt" "$default_value" 2>/dev/null)" || return 1
+                ;;
+        esac
+        answer="$(trim_whitespace "$answer")"
+        if [ -n "$answer" ]; then
+            printf '%s\n' "$answer"
+            return 0
+        fi
+        prompt_error "This field cannot be empty."
+    done
+}
+
+prompt_optional_text() {
+    prompt="$1"
+    default_value="${2:-}"
+    case "$(dialog_backend)" in
+        zenity)
+            answer="$(zenity --entry --title "$TITLE" --text "$prompt" --entry-text "$default_value" 2>/dev/null)" || return 1
+            ;;
+        kdialog)
+            answer="$(kdialog --title "$TITLE" --inputbox "$prompt" "$default_value" 2>/dev/null)" || return 1
+            ;;
+    esac
+    trim_whitespace "$answer"
+}
+
+prompt_password() {
+    prompt="$1"
+    while :; do
+        case "$(dialog_backend)" in
+            zenity)
+                password="$(zenity --entry --title "$TITLE" --text "$prompt" --hide-text 2>/dev/null)" || return 1
+                ;;
+            kdialog)
+                password="$(kdialog --title "$TITLE" --password "$prompt" 2>/dev/null)" || return 1
+                ;;
+        esac
+        if [ -z "$password" ]; then
+            prompt_error "Password cannot be empty."
+            continue
+        fi
+        case "$(dialog_backend)" in
+            zenity)
+                confirmation="$(zenity --entry --title "$TITLE" --text "Confirm the password." --hide-text 2>/dev/null)" || return 1
+                ;;
+            kdialog)
+                confirmation="$(kdialog --title "$TITLE" --password "Confirm the password." 2>/dev/null)" || return 1
+                ;;
+        esac
+        if [ "$password" != "$confirmation" ]; then
+            prompt_error "Passwords do not match. Please try again."
+            continue
+        fi
+        printf '%s\n' "$password"
+        return 0
+    done
+}
+
+valid_username() {
+    printf '%s' "$1" | grep -Eq '^[a-z_][a-z0-9_-]*[$]?$'
+}
+
+valid_hostname() {
+    printf '%s' "$1" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
+}
+
+prompt_info "Welcome to openSUSE for Xiaomi Pad 6.\n\nThis first-boot setup will create your user account, set the hostname, and then reboot into the normal login screen." || exit 0
+
+while :; do
+    fullname="$(prompt_optional_text 'Full name (optional):' '')" || exit 0
+    username="$(prompt_required_text 'Username:' '')" || exit 0
+    username="$(printf '%s' "$username" | tr '[:upper:]' '[:lower:]')"
+
+    if ! valid_username "$username"; then
+        prompt_error "Username must start with a letter or underscore and may contain lowercase letters, numbers, hyphens, or underscores."
+        continue
+    fi
+    if id "$username" >/dev/null 2>&1; then
+        prompt_error "User '$username' already exists. Choose another username."
+        continue
+    fi
+
+    hostname="$(prompt_required_text 'Hostname:' "$DEFAULT_HOSTNAME")" || exit 0
+    hostname="$(printf '%s' "$hostname" | tr '[:upper:]' '[:lower:]')"
+    if ! valid_hostname "$hostname"; then
+        prompt_error "Hostname may only contain lowercase letters, numbers, and hyphens."
+        continue
+    fi
+
+    password="$(prompt_password "Password for $username:")" || exit 0
+    break
+done
+
+if [ -n "$fullname" ]; then
+    useradd -m -G wheel -s "$DEFAULT_SHELL" -c "$fullname" "$username"
+else
+    useradd -m -G wheel -s "$DEFAULT_SHELL" "$username"
+fi
+printf 'root:%s\n%s:%s\n' "$password" "$username" "$password" | chpasswd
+printf '%s\n' "$hostname" > /etc/hostname
+cat > /etc/hosts <<HOSTS
+127.0.0.1 localhost
+::1 localhost
+127.0.1.1 $hostname.localdomain $hostname
+HOSTS
+
+rm -f /etc/sddm.conf.d/10-firstboot-autologin.conf
+rm -f "$AUTOSTART_FILE" "$SENTINEL"
+prompt_info "Setup complete.\n\nUser '$username' was created and the hostname was set to '$hostname'. Rebooting now." || true
+systemctl reboot
+EOF
+
+    SESSION_FILE="$(first_existing_file \
+        "$ROOTFS_DIR/usr/share/wayland-sessions/plasma.desktop" \
+        "$ROOTFS_DIR/usr/share/wayland-sessions/plasmawayland.desktop" \
+        "$ROOTFS_DIR/usr/share/xsessions/plasma.desktop" \
+        "$ROOTFS_DIR/usr/share/wayland-sessions/plasma-mobile.desktop" \
+        "$ROOTFS_DIR/usr/share/xsessions/plasma-mobile.desktop" \
+    )"
+    SESSION_NAME="$(basename "${SESSION_FILE:-plasma.desktop}" .desktop)"
+    install -d "$ROOTFS_DIR/etc/sddm.conf.d"
+    cat > "$ROOTFS_DIR/etc/sddm.conf.d/10-firstboot-autologin.conf" <<EOF
+[Autologin]
+User=root
+Session=$SESSION_NAME
+Relogin=false
+EOF
+    install -Dm644 /dev/stdin "$ROOTFS_DIR/root/.config/autostart/pipa-firstboot-setup.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=openSUSE Pipa First Boot Setup
+Exec=sh -lc 'sleep 3; exec /usr/local/bin/pipa-firstboot-setup'
+NoDisplay=true
+EOF
+    install -d "$ROOTFS_DIR/var/lib/pipa-firstboot"
+    : > "$ROOTFS_DIR/var/lib/pipa-firstboot/needs-setup"
+fi
 
 echo "### Enabling services..."
 target_chroot systemctl enable "$DISPLAY_MANAGER" || true
