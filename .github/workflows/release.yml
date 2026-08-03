@@ -1,0 +1,39 @@
+name: Create GitHub Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          notes="$(printf '%s\n' \
+            '## Summary' \
+            'Flashable openSUSE Tumbleweed images for Xiaomi Pad 6 (pipa).' \
+            '' \
+            '### First boot' \
+            '- **GNOME:** `gnome-initial-setup` (create your user)' \
+            '- **Plasma / Plasma Mobile:** one-time create-user dialog' \
+            '' \
+            '### Images' \
+            'Desktop ZIP builds from `main` are uploaded as workflow artifacts:' \
+            '`opensuse-pipa-gnome`, `opensuse-pipa-plasma`, `opensuse-pipa-plasma-mobile`.' \
+            '' \
+            'See the README for flash instructions.')"
+          gh release create "$tag" \
+            --title "openSUSE pipa ${tag}" \
+            --notes "$notes" \
+            --verify-tag
