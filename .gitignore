@@ -4,3 +4,5 @@ images/
 *.zip
 *.tar
 *.tar.*
+
+!pipa-opensuse-builder/vbmeta.img
