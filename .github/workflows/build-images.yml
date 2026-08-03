@@ -1,0 +1,51 @@
+name: Build openSUSE pipa images
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.desktop }}
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        desktop: [gnome, plasma, plasma-mobile]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show runner
+        run: |
+          uname -a
+          docker version
+
+      - name: Build builder image
+        run: docker build pipa-opensuse-builder -t pipa-opensuse-builder
+
+      - name: Build ${{ matrix.desktop }} image
+        timeout-minutes: 180
+        run: |
+          mkdir -p images
+          docker run --rm --privileged \
+            -v "$PWD/images:/build/images" \
+            -v /dev:/dev \
+            -e "BUILD_GIT_REV=${GITHUB_SHA}" \
+            -e "PIPA_REPO_URL=${PIPA_REPO_URL:-https://thespider2.github.io/pipa-pkgs/repo/opensuse/}" \
+            pipa-opensuse-builder "${{ matrix.desktop }}"
+
+      - name: Upload image ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensuse-pipa-${{ matrix.desktop }}
+          path: images/*.zip
+          if-no-files-found: error
+          retention-days: 14
