@@ -121,6 +121,30 @@ assert_required_rootfs_files() {
     done
 }
 
+# openSUSE ships many firmware blobs as .xz/.zst; the kernel loads them compressed.
+assert_required_firmware() {
+    local file_path candidate found
+    for file_path in "$@"; do
+        found=0
+        for candidate in \
+            "$ROOTFS_DIR/$file_path" \
+            "$ROOTFS_DIR/$file_path.xz" \
+            "$ROOTFS_DIR/$file_path.zst" \
+            "$ROOTFS_DIR/$file_path.gz"
+        do
+            if [ -e "$candidate" ]; then
+                found=1
+                break
+            fi
+        done
+        if [ "$found" -ne 1 ]; then
+            echo "Missing required firmware: $file_path (.xz/.zst also accepted)" >&2
+            ls -la "$ROOTFS_DIR/$(dirname "$file_path")" 2>/dev/null || true
+            exit 1
+        fi
+    done
+}
+
 write_placeholder_initramfs() {
     local out="$1"
     printf '\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03' > "$out"
@@ -180,6 +204,8 @@ BASE_PACKAGES=(
     grub2
     which
     python313
+    bluez
+    device-mapper
 )
 
 case "$DE_NAME" in
@@ -258,6 +284,10 @@ zypper --non-interactive --installroot "$ROOTFS_DIR" addrepo -f -G \
     "$PIPA_REPO_URL" pipa-pkgs
 zypper --non-interactive --installroot "$ROOTFS_DIR" modifyrepo -p 50 pipa-pkgs
 
+# Skip flaky/unneeded repos on GHA aarch64 (timeouts on non-oss/openh264).
+zypper --non-interactive --installroot "$ROOTFS_DIR" modifyrepo -d \
+    repo-non-oss repo-openh264 2>/dev/null || true
+
 zypper --non-interactive --installroot "$ROOTFS_DIR" --gpg-auto-import-keys refresh
 zypper --non-interactive --installroot "$ROOTFS_DIR" repos -up
 
@@ -272,8 +302,10 @@ zypper --non-interactive --installroot "$ROOTFS_DIR" install -y \
     "${DESKTOP_PACKAGES[@]}" \
     "${PIPA_PACKAGES[@]}"
 
+rpm --root "$ROOTFS_DIR" -q kernel-firmware-qcom kernel-firmware-ath11k kernel-pipa kernel-pipa-modules
+
 if [ ${#OPTIONAL_PIPA_PACKAGES[@]} -gt 0 ]; then
-    zypper --non-interactive --installroot "$ROOTFS_DIR" install -y \
+    zypper --non-interactive --installroot "$ROOTFS_DIR" --no-refresh install -y \
         "${OPTIONAL_PIPA_PACKAGES[@]}" || true
 fi
 
@@ -366,7 +398,10 @@ if [ ! -f "$ROOTFS_DIR/usr/lib/modules/$KERNEL_VER/modules.dep" ]; then
 fi
 
 echo "### Generating initramfs..."
-target_chroot dracut --force --kver "$KERNEL_VER" "/boot/initramfs-$KERNEL_VER.img"
+# Tablet images do not need LUKS helpers; omitting avoids dm/crypt module errors
+# when host/network packaging is incomplete.
+target_chroot dracut --force --omit "crypt systemd-cryptsetup" \
+    --kver "$KERNEL_VER" "/boot/initramfs-$KERNEL_VER.img"
 INITRAMFS_IMAGE="$(first_existing_file \
     "$ROOTFS_DIR/boot/initramfs-$KERNEL_VER.img" \
     "$ROOTFS_DIR/boot/initramfs.img" \
@@ -378,7 +413,7 @@ fi
 cp "$INITRAMFS_IMAGE" "$ROOTFS_DIR/boot/initramfs.img"
 
 echo "### Validating firmware..."
-assert_required_rootfs_files \
+assert_required_firmware \
     "usr/lib/firmware/qcom/a650_sqe.fw" \
     "usr/lib/firmware/qcom/a650_gmu.bin" \
     "usr/lib/firmware/ath11k/QCA6390/hw2.0/amss.bin"
