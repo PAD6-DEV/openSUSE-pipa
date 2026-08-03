@@ -380,6 +380,16 @@ echo "### Locale / keymap..."
 echo 'LANG=C.UTF-8' > "$ROOTFS_DIR/etc/locale.conf"
 echo 'KEYMAP=us' > "$ROOTFS_DIR/etc/vconsole.conf"
 
+echo "### SSH: allow password login (incl. root) for tablet recovery..."
+install -d "$ROOTFS_DIR/etc/ssh/sshd_config.d"
+# Upstream default is PermitRootLogin prohibit-password, which rejects root:opensuse
+# over SSH even though PasswordAuthentication is on.
+cat > "$ROOTFS_DIR/etc/ssh/sshd_config.d/10-pipa.conf" <<'EOF'
+PermitRootLogin yes
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+EOF
+
 echo "### fstab..."
 cat > "$ROOTFS_DIR/etc/fstab" <<EOF
 LABEL=$ROOTFS_LABEL / ext4 defaults,x-systemd.growfs 0 1
