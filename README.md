@@ -30,3 +30,5 @@ GitHub Actions builds all three desktops on `ubuntu-24.04-arm` and uploads ZIP a
 
 - **GNOME:** GDM runs `gnome-initial-setup` (create your user). Root password is `opensuse` for SSH/recovery.
 - **Plasma / Plasma Mobile:** root autologins once, shows a create-user dialog, then reboots to the normal login screen.
+
+GNOME images install core apps (Files, Console, Text Editor, Calculator, Software, …) plus Noto/Cantarell/Liberation fonts so Firefox text renders correctly.

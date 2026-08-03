@@ -206,6 +206,14 @@ BASE_PACKAGES=(
     python313
     bluez
     device-mapper
+    # Minimal images often skip Recommends; pin fonts so Firefox/UI text is not tofu.
+    cantarell-fonts
+    dejavu-fonts
+    liberation-fonts
+    google-noto-sans-fonts
+    google-noto-serif-fonts
+    google-noto-sans-mono-fonts
+    google-noto-coloremoji-fonts
 )
 
 case "$DE_NAME" in
@@ -225,16 +233,46 @@ case "$DE_NAME" in
         DISPLAY_MANAGER="sddm"
         ;;
     gnome)
+        # patterns-gnome-gnome alone is thin when solver.onlyRequires=true.
+        # Pull recommends + explicit core apps so the desktop is usable.
         DESKTOP_PACKAGES=(
             patterns-gnome-gnome
+            patterns-gnome-gnome_basic
+            patterns-gnome-gnome_utilities
+            patterns-gnome-gnome_imaging
+            patterns-gnome-gnome_multimedia
             gdm
             gnome-shell
+            gnome-session-wayland
+            gnome-control-center
+            gnome-console
             gnome-terminal
             nautilus
+            gnome-text-editor
+            gnome-calculator
+            gnome-calendar
+            gnome-characters
+            gnome-clocks
+            gnome-contacts
+            gnome-maps
+            gnome-weather
+            gnome-system-monitor
+            gnome-disk-utility
+            gnome-logs
+            gnome-software
+            gnome-tweaks
+            gnome-backgrounds
+            gnome-initial-setup
+            loupe
+            evince
+            file-roller
+            snapshot
+            baobab
+            sushi
+            ibus
             MozillaFirefox
             flatpak
             xdg-desktop-portal-gnome
-            gnome-initial-setup
         )
         DISPLAY_MANAGER="gdm"
         ;;
@@ -272,6 +310,20 @@ fi
 if [ -f /etc/zypp/zypp.conf ]; then
     cp -a /etc/zypp/zypp.conf "$ROOTFS_DIR/etc/zypp/zypp.conf"
 fi
+# Container/minimal zypp.conf often sets solver.onlyRequires=true, which drops
+# pattern Recommends (GNOME core apps, Noto fonts, etc.). Force recommends on.
+mkdir -p "$ROOTFS_DIR/etc/zypp"
+if [ -f "$ROOTFS_DIR/etc/zypp/zypp.conf" ]; then
+    if grep -q '^solver.onlyRequires' "$ROOTFS_DIR/etc/zypp/zypp.conf"; then
+        sed -i 's/^solver.onlyRequires.*/solver.onlyRequires = false/' \
+            "$ROOTFS_DIR/etc/zypp/zypp.conf"
+    else
+        printf '\n## pipa image: install pattern Recommends\nsolver.onlyRequires = false\n' \
+            >> "$ROOTFS_DIR/etc/zypp/zypp.conf"
+    fi
+else
+    printf '## pipa image\nsolver.onlyRequires = false\n' > "$ROOTFS_DIR/etc/zypp/zypp.conf"
+fi
 
 echo "### Verifying pipa-pkgs repo at $PIPA_REPO_URL ..."
 if ! curl -fsSL "${PIPA_REPO_URL%/}/repodata/repomd.xml" -o /tmp/pipa-repomd.xml; then
@@ -300,7 +352,7 @@ if ! zypper --non-interactive --installroot "$ROOTFS_DIR" search -x bootmac | gr
     exit 1
 fi
 
-zypper --non-interactive --installroot "$ROOTFS_DIR" install -y \
+zypper --non-interactive --installroot "$ROOTFS_DIR" install --recommends -y \
     "${BASE_PACKAGES[@]}" \
     "${DESKTOP_PACKAGES[@]}" \
     "${PIPA_PACKAGES[@]}"
@@ -308,8 +360,14 @@ zypper --non-interactive --installroot "$ROOTFS_DIR" install -y \
 rpm --root "$ROOTFS_DIR" -q kernel-firmware-qcom kernel-firmware-ath11k kernel-pipa kernel-pipa-modules
 
 if [ ${#OPTIONAL_PIPA_PACKAGES[@]} -gt 0 ]; then
-    zypper --non-interactive --installroot "$ROOTFS_DIR" --no-refresh install -y \
+    zypper --non-interactive --installroot "$ROOTFS_DIR" --no-refresh install --recommends -y \
         "${OPTIONAL_PIPA_PACKAGES[@]}" || true
+fi
+
+# Soft-install extra GNOME bits that may rename between TW snapshots.
+if [ "$DE_NAME" = "gnome" ]; then
+    zypper --non-interactive --installroot "$ROOTFS_DIR" --no-refresh install --recommends -y \
+        gnome-papers eog || true
 fi
 
 echo "### Validating Pipa packages..."
