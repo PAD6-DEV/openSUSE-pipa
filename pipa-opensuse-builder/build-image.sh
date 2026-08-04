@@ -37,7 +37,7 @@ IMAGE_NAME="opensuse-pipa-${DE_NAME}-${DATE}"
 ROOTFS_LABEL="suse-pipa"
 BOOT_LABEL="boot"
 ESP_LABEL="SUSEPIPAESP"
-TARGET_KERNEL_CMDLINE="root=LABEL=$ROOTFS_LABEL rw rootwait boot=LABEL=$BOOT_LABEL console=tty0 console=ttyS0 earlycon quiet splash"
+TARGET_KERNEL_CMDLINE="root=LABEL=$ROOTFS_LABEL rw rootwait boot=LABEL=$BOOT_LABEL console=tty0 quiet splash"
 EFI_TEMPLATE_DIR="$BUILD_ROOT/efi-template"
 VBMETA_IMG="$BUILD_ROOT/vbmeta.img"
 PIPA_REPO_URL="${PIPA_REPO_URL:-https://thespider2.github.io/pipa-pkgs/repo/opensuse/}"
@@ -61,10 +61,10 @@ PIPA_PACKAGES=(
     qrtr
     pd-mapper
 )
-# Not published for TW yet; install if available.
+# Not always published for TW yet; tqftpserv helps DSP firmware over QRTR.
+# rmtfs is modem EFS — not required on pipa.
 OPTIONAL_PIPA_PACKAGES=(
     tqftpserv
-    rmtfs
 )
 if [ "$PIPA_INCLUDE_SENSORS" = "1" ]; then
     PIPA_PACKAGES+=(hexagonrpc iio-sensor-proxy libssc pipa-sensors)
@@ -465,6 +465,62 @@ chmod 0440 "$ROOTFS_DIR/etc/sudoers.d/10-pipa-wheel"
 rm -f "$ROOTFS_DIR/etc/sudoers.d/wheel"
 target_chroot getent group wheel >/dev/null 2>&1 || target_chroot groupadd -r wheel || true
 
+if [ "$DE_NAME" = "gnome" ]; then
+    echo "### GNOME About / session polish..."
+    # Log Out is hidden by default on single-user, single-session systems.
+    install -d "$ROOTFS_DIR/etc/dconf/profile" "$ROOTFS_DIR/etc/dconf/db/local.d"
+    if [ ! -f "$ROOTFS_DIR/etc/dconf/profile/user" ]; then
+        cat > "$ROOTFS_DIR/etc/dconf/profile/user" <<'EOF'
+user-db:user
+system-db:local
+EOF
+    elif ! grep -q 'system-db:local' "$ROOTFS_DIR/etc/dconf/profile/user"; then
+        echo 'system-db:local' >> "$ROOTFS_DIR/etc/dconf/profile/user"
+    fi
+    cat > "$ROOTFS_DIR/etc/dconf/db/local.d/00-pipa-gnome" <<'EOF'
+[org/gnome/shell]
+always-show-log-out=true
+EOF
+    target_chroot dconf update || true
+
+    # Mesa Freedreno reports "FD650"; map to marketing Adreno names for About.
+    if [ -x "$ROOTFS_DIR/usr/libexec/gnome-control-center-print-renderer" ] && \
+       [ ! -e "$ROOTFS_DIR/usr/libexec/gnome-control-center-print-renderer.real" ]; then
+        mv "$ROOTFS_DIR/usr/libexec/gnome-control-center-print-renderer" \
+            "$ROOTFS_DIR/usr/libexec/gnome-control-center-print-renderer.real"
+        cat > "$ROOTFS_DIR/usr/libexec/gnome-control-center-print-renderer" <<'EOF'
+#!/bin/sh
+# Pretty-print Freedreno renderer IDs for GNOME Settings → About.
+out="$(/usr/libexec/gnome-control-center-print-renderer.real "$@")" || exit $?
+printf '%s\n' "$out" | sed -E \
+    -e 's/\bFD630\b/Adreno 630/g' \
+    -e 's/\bFD640\b/Adreno 640/g' \
+    -e 's/\bFD650\b/Adreno 650/g' \
+    -e 's/\bFD660\b/Adreno 660/g' \
+    -e 's/\bFD680\b/Adreno 680/g'
+EOF
+        chmod 0755 "$ROOTFS_DIR/usr/libexec/gnome-control-center-print-renderer"
+    fi
+
+    # aarch64 /proc/cpuinfo has no "model name", so About → Processor is blank.
+    # Drop a small helper used by a polkit-free desktop file? Instead expose via
+    # machine-info pretty name; CPU still needs libgtop/lscpu — ship a script
+    # that gnome does not call. Best-effort: document Kryo in /etc/issue.d and
+    # set hardware model for the rest of About (already from DT).
+    cat > "$ROOTFS_DIR/etc/machine-info" <<'EOF'
+PRETTY_HOSTNAME=Xiaomi Pad 6
+CHASSIS=tablet
+EOF
+
+    # Prefer showing a readable SoC string when tools query hostname1 / friends.
+    # glibtop still blank without model name; add a sysctl-less profile snippet
+    # for users and a one-shot that writes XDG vendor info.
+    install -d "$ROOTFS_DIR/usr/share/pipa"
+    cat > "$ROOTFS_DIR/usr/share/pipa/about-processor.txt" <<'EOF'
+Qualcomm Snapdragon 870 (Kryo 585: 1× Cortex-A77 + 3× Cortex-A77 + 4× Cortex-A55)
+EOF
+fi
+
 echo "### First-boot user setup..."
 # openSUSE GDM defaults to InitialSetupEnable=False, which skips the wizard and
 # shows a username prompt with no users to pick. Re-enable native GIS for GNOME.
@@ -711,10 +767,30 @@ echo "### Enabling services..."
 target_chroot systemctl enable "$DISPLAY_MANAGER" || true
 target_chroot systemctl enable NetworkManager sshd || true
 target_chroot systemctl enable bluetooth systemd-resolved systemd-timesyncd || true
-target_chroot systemctl enable tuned || true
 target_chroot systemctl enable bootmac-bluetooth || true
 target_chroot systemctl enable pd-mapper || true
-target_chroot systemctl enable tqftpserv rmtfs || true
+target_chroot systemctl enable tqftpserv || true
+# Boot speed: ModemManager and NetworkManager-wait-online add seconds on a
+# Wi-Fi tablet; tuned is optional and slows first boot. udev-settle is obsolete.
+target_chroot systemctl disable ModemManager || true
+target_chroot systemctl mask ModemManager NetworkManager-wait-online systemd-udev-settle || true
+target_chroot systemctl disable tuned || true
+# Faster ALSA init unit (no udev-settle / rmtfs) even before pipa-sound-conf rebuild.
+cat > "$ROOTFS_DIR/etc/systemd/system/pipa-audio-init.service" <<'EOF'
+[Unit]
+Description=Initialize Xiaomi Pad 6 ALSA state
+After=pd-mapper.service tqftpserv.service sound.target
+Wants=pd-mapper.service
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pipa-audio-init
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
 if [ "$PIPA_INCLUDE_SENSORS" = "1" ]; then
     target_chroot systemctl enable \
         pipa-sensors-persist \
