@@ -362,17 +362,22 @@ fi
 
 # Image uses kernel-pipa. Stock TW kernels are useless here and often break the
 # build when oss metadata/CDN lag (zypper wants kernel-default-X which 404s).
+# After locking kernel-default, the solver can still pick kernel-64kb (aarch64
+# 64KB-page flavor) because it Provides a newer kernel= than kernel-pipa.
 echo "### Locking stock kernels (use kernel-pipa)..."
 zypper --non-interactive --installroot "$ROOTFS_DIR" al \
-    kernel-default \
-    kernel-default-base \
-    kernel-default-extra \
-    kernel-default-optional \
-    kernel-default-devel \
+    'kernel-default*' \
+    'kernel-64kb*' \
+    'kernel-rt*' \
+    'kernel-kvmsmall*' \
+    'kernel-zfcpdump*' \
     kernel-source \
     kernel-syms \
     kernel-obs-build || true
 
+# Install device kernel first so its Provides(kernel=...) is visible before
+# desktop patterns try to pull a stock TW kernel.
+echo "### Installing kernel-pipa before desktop stack..."
 zypper_install() {
     local attempt=1
     local max_attempts=3
@@ -391,6 +396,8 @@ zypper_install() {
     done
 }
 
+zypper_install kernel-pipa kernel-pipa-modules xiaomi-pipa-firmware
+
 zypper_install \
     "${BASE_PACKAGES[@]}" \
     "${DESKTOP_PACKAGES[@]}" \
@@ -398,11 +405,13 @@ zypper_install \
 
 rpm --root "$ROOTFS_DIR" -q kernel-firmware-qcom kernel-firmware-ath11k kernel-pipa kernel-pipa-modules
 
-# Refuse a stock kernel sneaking in despite locks.
-if rpm --root "$ROOTFS_DIR" -q kernel-default >/dev/null 2>&1; then
-    echo "kernel-default was installed; removing (kernel-pipa only)" >&2
-    zypper --non-interactive --installroot "$ROOTFS_DIR" rm -y kernel-default \
-        kernel-default-base kernel-default-extra kernel-default-optional || true
+# Refuse any stock kernel sneaking in despite locks.
+STOCK_KERNELS="$(rpm --root "$ROOTFS_DIR" -qa 'kernel-default*' 'kernel-64kb*' 'kernel-rt*' 'kernel-kvmsmall*' 2>/dev/null || true)"
+if [ -n "$STOCK_KERNELS" ]; then
+    echo "Stock TW kernel packages were installed; removing:" >&2
+    echo "$STOCK_KERNELS" >&2
+    # shellcheck disable=SC2086
+    zypper --non-interactive --installroot "$ROOTFS_DIR" rm -y $STOCK_KERNELS || true
 fi
 
 if [ ${#OPTIONAL_PIPA_PACKAGES[@]} -gt 0 ]; then
