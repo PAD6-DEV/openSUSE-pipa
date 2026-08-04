@@ -206,6 +206,7 @@ BASE_PACKAGES=(
     python313
     bluez
     device-mapper
+    zram-generator
     # Minimal images often skip Recommends; pin fonts so Firefox/UI text is not tofu.
     cantarell-fonts
     dejavu-fonts
@@ -764,6 +765,14 @@ EOF
 fi
 
 echo "### Enabling services..."
+# 8 GiB compressed RAM swap (zram-size is in MiB for zram-generator).
+cat > "$ROOTFS_DIR/etc/systemd/zram-generator.conf" <<'EOF'
+[zram0]
+zram-size = 8192
+compression-algorithm = zstd
+swap-priority = 100
+EOF
+
 target_chroot systemctl enable "$DISPLAY_MANAGER" || true
 target_chroot systemctl enable NetworkManager sshd || true
 target_chroot systemctl enable bluetooth systemd-resolved systemd-timesyncd || true
