@@ -207,6 +207,9 @@ BASE_PACKAGES=(
     bluez
     device-mapper
     zram-generator
+    # GNOME/Plasma Power Mode via TuneD's PPD compatibility daemon.
+    tuned
+    tuned-ppd
     # Minimal images often skip Recommends; pin fonts so Firefox/UI text is not tofu.
     cantarell-fonts
     dejavu-fonts
@@ -780,10 +783,11 @@ target_chroot systemctl enable bootmac-bluetooth || true
 target_chroot systemctl enable pd-mapper || true
 target_chroot systemctl enable tqftpserv || true
 # Boot speed: ModemManager and NetworkManager-wait-online add seconds on a
-# Wi-Fi tablet; tuned is optional and slows first boot. udev-settle is obsolete.
+# Wi-Fi tablet. udev-settle is obsolete. Keep tuned for Power Mode (tuned-ppd).
 target_chroot systemctl disable ModemManager || true
 target_chroot systemctl mask ModemManager NetworkManager-wait-online systemd-udev-settle || true
-target_chroot systemctl disable tuned || true
+target_chroot systemctl enable tuned || true
+target_chroot systemctl enable tuned-ppd || true
 # Faster ALSA init unit (no udev-settle / rmtfs) even before pipa-sound-conf rebuild.
 cat > "$ROOTFS_DIR/etc/systemd/system/pipa-audio-init.service" <<'EOF'
 [Unit]
