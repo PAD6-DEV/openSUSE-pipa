@@ -779,7 +779,7 @@ target_chroot systemctl disable tuned || true
 cat > "$ROOTFS_DIR/etc/systemd/system/pipa-audio-init.service" <<'EOF'
 [Unit]
 Description=Initialize Xiaomi Pad 6 ALSA state
-After=pd-mapper.service tqftpserv.service sound.target
+After=pd-mapper.service sound.target
 Wants=pd-mapper.service
 Before=display-manager.service
 
@@ -787,6 +787,23 @@ Before=display-manager.service
 Type=oneshot
 ExecStart=/usr/local/bin/pipa-audio-init
 RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# openSUSE pd-mapper Requires=qrtr-ns.service, but TW qrtr has no ns daemon
+# (in-kernel QRTR). Without this override pd-mapper never starts and audio
+# deferred-probes forever (WCD codec DAI missing).
+cat > "$ROOTFS_DIR/etc/systemd/system/pd-mapper.service" <<'EOF'
+[Unit]
+Description=Qualcomm PD mapper service
+After=sysinit.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/pd-mapper
+Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
