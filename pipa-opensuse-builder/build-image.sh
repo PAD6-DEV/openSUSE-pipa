@@ -454,8 +454,15 @@ EOF
 echo "### Root password (root:opensuse) and sudo..."
 target_mount
 echo 'root:opensuse' | target_chroot chpasswd
-echo '%wheel ALL=(ALL:ALL) ALL' > "$ROOTFS_DIR/etc/sudoers.d/wheel"
-chmod 0440 "$ROOTFS_DIR/etc/sudoers.d/wheel"
+# openSUSE ships Defaults targetpw in /usr/etc/sudoers, which makes sudo ask
+# for *root's* password. Disable that so wheel users authenticate as themselves.
+cat > "$ROOTFS_DIR/etc/sudoers.d/10-pipa-wheel" <<'EOF'
+Defaults !targetpw
+Defaults !rootpw
+%wheel ALL=(ALL:ALL) ALL
+EOF
+chmod 0440 "$ROOTFS_DIR/etc/sudoers.d/10-pipa-wheel"
+rm -f "$ROOTFS_DIR/etc/sudoers.d/wheel"
 target_chroot getent group wheel >/dev/null 2>&1 || target_chroot groupadd -r wheel || true
 
 echo "### First-boot user setup..."
