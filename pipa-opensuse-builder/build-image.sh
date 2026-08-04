@@ -343,6 +343,14 @@ zypper --non-interactive --installroot "$ROOTFS_DIR" modifyrepo -p 50 pipa-pkgs
 zypper --non-interactive --installroot "$ROOTFS_DIR" modifyrepo -d \
     repo-non-oss repo-openh264 2>/dev/null || true
 
+# Prefer the CDN backend; download.opensuse.org redirects can 404 mid-snapshot.
+if [ -d "$ROOTFS_DIR/etc/zypp/repos.d" ]; then
+    sed -i \
+        -e 's|http://download.opensuse.org/|https://downloadcontent.opensuse.org/|g' \
+        -e 's|https://download.opensuse.org/|https://downloadcontent.opensuse.org/|g' \
+        "$ROOTFS_DIR"/etc/zypp/repos.d/*.repo 2>/dev/null || true
+fi
+
 zypper --non-interactive --installroot "$ROOTFS_DIR" --gpg-auto-import-keys refresh
 zypper --non-interactive --installroot "$ROOTFS_DIR" repos -up
 
@@ -352,12 +360,50 @@ if ! zypper --non-interactive --installroot "$ROOTFS_DIR" search -x bootmac | gr
     exit 1
 fi
 
-zypper --non-interactive --installroot "$ROOTFS_DIR" install --recommends -y \
+# Image uses kernel-pipa. Stock TW kernels are useless here and often break the
+# build when oss metadata/CDN lag (zypper wants kernel-default-X which 404s).
+echo "### Locking stock kernels (use kernel-pipa)..."
+zypper --non-interactive --installroot "$ROOTFS_DIR" al \
+    kernel-default \
+    kernel-default-base \
+    kernel-default-extra \
+    kernel-default-optional \
+    kernel-default-devel \
+    kernel-source \
+    kernel-syms \
+    kernel-obs-build || true
+
+zypper_install() {
+    local attempt=1
+    local max_attempts=3
+    while true; do
+        if zypper --non-interactive --installroot "$ROOTFS_DIR" install \
+            --recommends --force-resolution -y "$@"; then
+            return 0
+        fi
+        if [ "$attempt" -ge "$max_attempts" ]; then
+            return 1
+        fi
+        echo "zypper install failed (attempt $attempt/$max_attempts); refreshing and retrying..." >&2
+        zypper --non-interactive --installroot "$ROOTFS_DIR" refresh || true
+        attempt=$((attempt + 1))
+        sleep 5
+    done
+}
+
+zypper_install \
     "${BASE_PACKAGES[@]}" \
     "${DESKTOP_PACKAGES[@]}" \
     "${PIPA_PACKAGES[@]}"
 
 rpm --root "$ROOTFS_DIR" -q kernel-firmware-qcom kernel-firmware-ath11k kernel-pipa kernel-pipa-modules
+
+# Refuse a stock kernel sneaking in despite locks.
+if rpm --root "$ROOTFS_DIR" -q kernel-default >/dev/null 2>&1; then
+    echo "kernel-default was installed; removing (kernel-pipa only)" >&2
+    zypper --non-interactive --installroot "$ROOTFS_DIR" rm -y kernel-default \
+        kernel-default-base kernel-default-extra kernel-default-optional || true
+fi
 
 if [ ${#OPTIONAL_PIPA_PACKAGES[@]} -gt 0 ]; then
     zypper --non-interactive --installroot "$ROOTFS_DIR" --no-refresh install --recommends -y \
